@@ -1,69 +1,212 @@
-import Image from "next/image";
+"use client";
+
+import React, { useState, useRef } from "react";
+import { StagedFile, OrganizedFile, ViewTab } from "@/lib/types";
+import {
+  SAMPLE_FILES,
+  MAX_FILES,
+  MAX_FILE_SIZE_BYTES,
+  MAX_CHAR_LENGTH,
+} from "@/lib/constants";
+import { downloadSingleFile, downloadAllAsZip } from "@/lib/utils";
+import { organizeFiles } from "@/lib/api";
+import { Header } from "@/components/layout/Header";
+import { Footer } from "@/components/layout/Footer";
+import { HeroSection } from "@/components/sections/HeroSection";
+import { ErrorAlert } from "@/components/sections/ErrorAlert";
+import { FileStager } from "@/components/sections/FileStager";
+import { ResultsSection } from "@/components/sections/ResultsSection";
 
 export default function Home() {
+  const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
+  const [results, setResults] = useState<OrganizedFile[] | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [loadingStep, setLoadingStep] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<ViewTab>("folder");
+  const [expandedPreview, setExpandedPreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setError(null);
+
+    const availableSlots = MAX_FILES - stagedFiles.length;
+    if (availableSlots <= 0) {
+      setError(`Maximum ${MAX_FILES} files can be organized in one batch.`);
+      return;
+    }
+
+    const filesToRead = Array.from(files).slice(0, availableSlots);
+
+    filesToRead.forEach((file) => {
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        setError(`File "${file.name}" is too large. Max size is 500KB for text.`);
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = (e.target?.result as string) || "";
+        const truncated = text.slice(0, MAX_CHAR_LENGTH);
+
+        setStagedFiles((prev) => {
+          if (prev.some((f) => f.name === file.name)) {
+            return prev;
+          }
+          if (prev.length >= MAX_FILES) return prev;
+          return [
+            ...prev,
+            {
+              name: file.name,
+              size: file.size,
+              content: truncated,
+            },
+          ];
+        });
+      };
+      reader.readAsText(file);
+    });
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    handleFileUpload(e.dataTransfer.files);
+  };
+
+  const loadSampleFiles = () => {
+    setError(null);
+    setResults(null);
+    setStagedFiles(SAMPLE_FILES);
+  };
+
+  const removeStagedFile = (name: string) => {
+    setStagedFiles((prev) => prev.filter((f) => f.name !== name));
+    if (results) {
+      setResults(null);
+    }
+  };
+
+  const clearAll = () => {
+    setStagedFiles([]);
+    setResults(null);
+    setError(null);
+  };
+
+  const handleOrganize = async () => {
+    if (stagedFiles.length === 0) {
+      setError("Please add at least 1 file to organize.");
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setResults(null);
+    setLoadingStep("Reading files and preparing payload...");
+
+    try {
+      setTimeout(() => {
+        setLoadingStep("Querying local Gemma model via Ollama...");
+      }, 1000);
+
+      setTimeout(() => {
+        setLoadingStep("Analyzing content, categorizing & generating summaries...");
+      }, 4000);
+
+      const organizedData = await organizeFiles(stagedFiles);
+      setResults(organizedData);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "An unexpected error occurred.";
+      setError(msg);
+    } finally {
+      setIsLoading(false);
+      setLoadingStep("");
+    }
+  };
+
+  const handleDownloadSingle = (res: OrganizedFile) => {
+    downloadSingleFile(res, stagedFiles);
+  };
+
+  const handleDownloadZip = async () => {
+    if (!results) return;
+    try {
+      await downloadAllAsZip(results, stagedFiles);
+    } catch (err) {
+      console.error("ZIP creation error:", err);
+      setError("Failed to create ZIP package.");
+    }
+  };
+
+  const handleCopy = (text: string, index: number) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIndex(index);
+    setTimeout(() => setCopiedIndex(null), 2000);
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+      {/* Top Navigation */}
+      <Header />
+
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-8 space-y-8">
+        {/* Hero Section */}
+        <HeroSection />
+
+        {/* Error Alert */}
+        {error && <ErrorAlert error={error} onDismiss={() => setError(null)} />}
+
+        {/* Upload & Staging Card */}
+        <FileStager
+          stagedFiles={stagedFiles}
+          isLoading={isLoading}
+          loadingStep={loadingStep}
+          expandedPreview={expandedPreview}
+          isDragOver={isDragOver}
+          fileInputRef={fileInputRef}
+          onFileUpload={handleFileUpload}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onLoadSample={loadSampleFiles}
+          onClearAll={clearAll}
+          onRemoveFile={removeStagedFile}
+          onTogglePreview={(name) =>
+            setExpandedPreview((prev) => (prev === name ? null : name))
+          }
+          onOrganize={handleOrganize}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+
+        {/* Results Section */}
+        {results && results.length > 0 && (
+          <ResultsSection
+            results={results}
+            activeTab={activeTab}
+            copiedIndex={copiedIndex}
+            onTabChange={setActiveTab}
+            onDownloadZip={handleDownloadZip}
+            onDownloadSingleFile={handleDownloadSingle}
+            onCopy={handleCopy}
+          />
+        )}
       </main>
+
+      {/* Footer */}
+      <Footer />
     </div>
   );
 }
